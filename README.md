@@ -38,3 +38,9 @@ To compile clojurescript to javascript:
 lein clean
 lein cljsbuild once min
 ```
+```clojure
+(twiteth.core/-main)
+(figwheel-sidecar.repl-api/start-figwheel! (figwheel-sidecar.config/fetch-config))
+(figwheel-sidecar.repl-api/cljs-repl)
+```
+Open at http://localhost:6655/

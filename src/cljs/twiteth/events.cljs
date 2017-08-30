@@ -13,6 +13,7 @@
         [cljs.spec.alpha :as s]
         [twiteth.interval-fx]
         [twiteth.utils :as u]
+        [twiteth.components.confirm-dialog :as confirm-dialog]
         [twiteth.constants :as constants]
         [twiteth.window-fx]
         [madvas.re-frame.web3-fx]
@@ -170,17 +171,20 @@
                                  [(when (all-contracts-loaded? new-db)
                                     [:eth-contracts-loaded])
                                   (when (and (= code-type :abi) (= contract-key :simple-twitter))
-                                         [:contract/simple-twitter-loaded contract-key])])})))))
+                                         [:contract/simple-twitter-loaded contract-key])
+                                   ])})))))
 
-    (reg-event-fx
+(reg-event-fx
       :contract/simple-twitter-loaded
       interceptors
       (fn [{:keys [db]} [contract-key]]
         (let [web3 (:web3 db)
               contract-instance (get-instance db contract-key)]
-          ;;(console :log "simple-twitter-loaded")
+          (console :log "simple-twitter-loaded")
 
-          {:web3-fx.contract/events
+          {:db db
+
+           :web3-fx.contract/events
            {:db-path [:contract :events]
             :events [[contract-instance :on-tweet-added {} {:from-block 0} :contract/on-tweet-loaded :log-error]]}
 
@@ -189,6 +193,24 @@
              :fns [[:get-settings :contract/settings-loaded :log-error]]}})))
 
 
+(reg-event-fx
+  :contract/abi-loaded
+  interceptors
+  (fn [{:keys [db]} [abi]]
+    (let [web3 (:web3 db)
+          contract-instance (web3-eth/contract-at web3 abi (:address (:contract db)))]
+
+      {:db (assoc-in db [:contract :instance] contract-instance)
+
+       :web3-fx.contract/events
+       {:instance contract-instance
+        :db db
+        :db-path [:contract :events]
+        :events [[:on-tweet-added {} {:from-block 0} :contract/on-tweet-loaded :log-error]]}
+
+       :web3-fx.contract/constant-fns
+       {:instance contract-instance
+        :fns [[:get-settings :contract/settings-loaded :log-error]]}})))
 
   (reg-event-fx
     :eth-contracts-loaded
@@ -262,7 +284,8 @@
      :contract/on-tweet-loaded
      interceptors
      (fn [db [tweet]]
-       (update db :tweets conj (merge (select-keys tweet [:author-address :text :name])
+       ;;(console :log (str "tweet loaded " tweet))
+       (update db :tweets conj (merge (select-keys tweet [:address :text :name])
                                       {:date (u/big-number->date-time (:date tweet))
                                        :tweet-key (.toNumber (:tweet-key tweet))}))))
 
@@ -270,6 +293,7 @@
      :contract/settings-loaded
      interceptors
      (fn [db [[max-name-length max-tweet-length]]]
+       (console :log "contract settings-loaded")
        (assoc db :settings {:max-name-length (.toNumber max-name-length)
                             :max-tweet-length (.toNumber max-tweet-length)})))
 
@@ -339,35 +363,37 @@
      :new-tweet/transaction-receipt-loaded
      interceptors
      (fn [db [{:keys [gas-used] :as transaction-receipt}]]
-       (console :log transaction-receipt)
+       ;;(console :log (str "receipt " transaction-receipt))
        (when (= gas-used tweet-gas-limit)
          (console :error "All gas used"))
        (assoc-in db [:new-tweet :sending?] false)))
-
 
    (reg-event-fx
      :contract/fetch-compiled-code
      interceptors
      (fn [{:keys [db]} [on-success]]
-       {:http-xhrio {:method :get
-                     :uri (gstring/format "/contracts/build/%s.json"
-                                          (get-in db [:contract :name]))
+        {:http-xhrio
+            (flatten
+              (for [[key {:keys [name]}] (:eth/contracts db)]
+                    {:method :get
+                     :uri (gstring/format "/contracts/build/%s.json" name)
                      :timeout 6000
                      :response-format (ajax/json-response-format {:keywords? true})
-                     :on-success on-success
-                     :on-failure [:log-error]}}))
+                     :on-success (conj on-success name)
+                     :on-failure [:log-error]}))}))
 
    (reg-event-fx
      :contract/deploy-compiled-code
      interceptors
-     (fn [{:keys [db]} [contracts]]
-       (let [{:keys [abi bin]} (get-in contracts [:contracts (keyword (:name (:contract db)))])]
+     (fn [{:keys [db]} [name contracts]]
+       (let [{:keys [abi bin]} (get-in contracts [:contracts (keyword name)])]
+         (console :log (str "deploying "  name))
          {:web3-fx.blockchain/fns
           {:web3 (:web3 db)
            :fns [[web3-eth/contract-new
                   (js/JSON.parse abi)
                   {:gas 4500000
-                   :data bin
+                   :data (str "0x" bin)
                    :from (first (:my-addresses db))}
                   :contract/deployed
                   :log-error]]}})))
@@ -394,6 +420,61 @@
        {:web3-fx.blockchain/fns
         {:web3 (:web3 db)
          :fns [[web3-eth/accounts :log [:blockchain/on-error :print-accounts]]]}}))
+
+;;;;;;;;;;;;;;;;;;;;;;;; snackbar + dialog ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(reg-event-fx
+  :snackbar/show-error
+  interceptors
+  (fn [{:keys [db]} [error-text]]
+      {:db (update db :snackbar merge
+                   {:open? true
+                    :message (or error-text "Oops, we got an error while saving to blockchain")
+                    :action nil
+                    :on-action-touch-tap nil})}))
+
+(reg-event-fx
+  :snackbar/show-message
+  interceptors
+  (fn [{:keys [db]} [message]]
+      {:db (update db :snackbar merge
+                   {:open? true
+                    :message message
+                    :action nil
+                    :on-action-touch-tap nil})}))
+
+(reg-event-fx
+  :snackbar/show-message-redirect-action
+  interceptors
+  (fn [{:keys [db]} [message route route-params]]
+      {:db (update db :snackbar merge
+                   {:open? true
+                    :message message
+                    :action "SHOW ME"
+                    :on-action-touch-tap #(dispatch [:location/set-hash route route-params])})}))
+
+(reg-event-db
+  :snackbar/close
+  interceptors
+  (fn [db _]
+    (assoc-in db [:snackbar :open?] false)))
+
+(reg-event-fx
+  :dialog/open-confirmation
+  interceptors
+  (fn [{:keys [db]} [{:keys [:on-confirm] :as dialog}]]
+    {:db (update db :dialog merge
+                 (merge {:open? true
+                         :message dialog
+                         :actions (confirm-dialog/create-confirm-dialog-action-buttons
+                                    {:confirm-button-props {:on-confirm on-confirm}})}
+                        (dissoc dialog :on-confirm)))}))
+
+(reg-event-db
+  :dialog/close
+  interceptors
+  (fn [db _]
+    (assoc-in db [:dialog :open?] false)))
 
      ;;;;;;;;;;;;;;;;;;;;,, debug ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
    (reg-event-db

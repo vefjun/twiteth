@@ -86,4 +86,4 @@
      :conversion-rates {}
      :conversion-rates-historical {}
      :load-all-conversion-rates-interval nil
-     :eth/contracts {:simple-twitter {:name "SimpleTwitter" :address "0x372306700161f72bce00dd5f777125a1c1272a90"}}})
+     :eth/contracts {:simple-twitter {:name "SimpleTwitter" :address "0x54d7acf55a735faaba18f0ae04e43ec278cac869"}}})

@@ -1,0 +1,4 @@
+(restart-server)
+  (-main)
+(twiteth.core/-main)
+(-main)
